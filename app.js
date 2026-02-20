@@ -30,7 +30,8 @@
     undoStack: [],
     redoStack: [],
     projectName: '',
-    orthoMode: true
+    orthoMode: true,
+    mode: 'draw'               // 'draw' | 'dim' | 'delete'
   };
 
   /* ─── ポインタ操作用（保存しない） ─── */
@@ -158,6 +159,18 @@
     } else if (a.type === 'move') {
       var p = pt(a.pid);
       if (p) { p.x = inv ? a.ox : a.nx; p.y = inv ? a.oy : a.ny; }
+    } else if (a.type === 'deleteBatch') {
+      if (inv) {
+        // Undo: 削除した点・線を復元
+        for (var i = 0; i < a.pts.length; i++) state.points.push(clone(a.pts[i]));
+        for (var i = 0; i < a.segs.length; i++) state.segments.push(clone(a.segs[i]));
+      } else {
+        // Redo: 再度削除
+        var pidSet = {}; for (var i = 0; i < a.pts.length; i++) pidSet[a.pts[i].id] = true;
+        var sidSet = {}; for (var i = 0; i < a.segs.length; i++) sidSet[a.segs[i].id] = true;
+        state.points = state.points.filter(function(p){ return !pidSet[p.id]; });
+        state.segments = state.segments.filter(function(s){ return !sidSet[s.id]; });
+      }
     }
   }
   function updUndoBtn() {
@@ -378,13 +391,13 @@
   }
 
   /* ═══════════════════════════════════════════
-   *  ポインタイベント
+   *  ポインタイベント（モード分岐）
    * ═══════════════════════════════════════════ */
   function onDown(e) {
     if (e.button && e.button !== 0) return;
     e.preventDefault();
     var sv = screen2svg(e.clientX, e.clientY);
-    var np = nearPt(sv.x, sv.y);
+    var np = (state.mode === 'draw') ? nearPt(sv.x, sv.y) : null;
     ptr = {
       down: true, sx: e.clientX, sy: e.clientY,
       svgX: sv.x, svgY: sv.y, moved: false,
@@ -395,10 +408,12 @@
   }
 
   function onMove(e) {
+    /* ── ホバー（描画モードのみプレビュー） ── */
     if (!ptr.down) {
-      // ホバー時プレビュー（マウスのみ）
-      var sv = screen2svg(e.clientX, e.clientY);
-      showPreview(sv.x, sv.y);
+      if (state.mode === 'draw') {
+        var sv = screen2svg(e.clientX, e.clientY);
+        showPreview(sv.x, sv.y);
+      }
       return;
     }
     e.preventDefault();
@@ -406,57 +421,195 @@
     if (Math.hypot(dx, dy) > TAP_THR_PX) ptr.moved = true;
     if (!ptr.moved) return;
 
-    if (ptr.target.type === 'point') {
-      // 点ドラッグ（十字カーソルも追従）
-      var sv2 = screen2svg(e.clientX, e.clientY);
-      var sn  = snap(sv2.x, sv2.y);
-      var p   = pt(ptr.target.id);
-      if (p) { p.x = sn.x; p.y = sn.y; render(); showPreview(sn.x, sn.y); }
-    } else {
-      // パン
-      if (ptr.target.type === 'pending') ptr.target = { type: 'pan' };
-      var scale = viewW() / svg.getBoundingClientRect().width;
-      state.panX = ptr.panSX - dx * scale;
-      state.panY = ptr.panSY - dy * scale;
-      updateViewBox();
+    /* ── 描画モード ── */
+    if (state.mode === 'draw') {
+      if (ptr.target.type === 'point') {
+        var sv2 = screen2svg(e.clientX, e.clientY);
+        var sn  = snap(sv2.x, sv2.y);
+        var p   = pt(ptr.target.id);
+        if (p) { p.x = sn.x; p.y = sn.y; render(); showPreview(sn.x, sn.y); }
+      } else {
+        if (ptr.target.type === 'pending') ptr.target = { type: 'pan' };
+        var sc = viewW() / svg.getBoundingClientRect().width;
+        state.panX = ptr.panSX - dx * sc;
+        state.panY = ptr.panSY - dy * sc;
+        updateViewBox();
+      }
+    }
+
+    /* ── 削除モード：矩形選択プレビュー ── */
+    if (state.mode === 'delete') {
+      var curSvg = screen2svg(e.clientX, e.clientY);
+      drawDeleteRect(ptr.svgX, ptr.svgY, curSvg.x, curSvg.y);
     }
   }
 
   function onUp(e) {
     if (!ptr.down) return;
     e.preventDefault();
-    if (!ptr.moved) {
-      /* --- タップ --- */
-      if (ptr.target.type === 'point') {
-        var tp = pt(ptr.target.id);
-        if (state.activeId && tp && tp.id !== state.activeId) {
-          // 既存点へ接続
-          var sg = { id: id(), a: state.activeId, b: tp.id };
-          state.segments.push(sg);
-          pushUndo({ type:'connect', seg: clone(sg), prevActive: state.activeId });
-          state.activeId = null;
-          render();
-        } else if (!state.activeId) {
-          state.activeId = tp.id;
-          render();
+
+    /* ── 描画モード ── */
+    if (state.mode === 'draw') {
+      if (!ptr.moved) {
+        if (ptr.target.type === 'point') {
+          var tp = pt(ptr.target.id);
+          if (state.activeId && tp && tp.id !== state.activeId) {
+            var sg = { id: id(), a: state.activeId, b: tp.id };
+            state.segments.push(sg);
+            pushUndo({ type:'connect', seg: clone(sg), prevActive: state.activeId });
+            state.activeId = null;
+            render();
+          } else if (!state.activeId) {
+            state.activeId = tp.id;
+            render();
+          }
+        } else {
+          var sv = screen2svg(e.clientX, e.clientY);
+          addPoint(sv.x, sv.y);
         }
       } else {
-        // 空白タップ → 点追加
-        var sv = screen2svg(e.clientX, e.clientY);
-        addPoint(sv.x, sv.y);
-      }
-    } else {
-      /* --- ドラッグ完了 --- */
-      if (ptr.target.type === 'point') {
-        var p2 = pt(ptr.target.id);
-        if (p2 && (p2.x !== ptr.origX || p2.y !== ptr.origY)) {
-          pushUndo({ type:'move', pid: ptr.target.id,
-                     ox: ptr.origX, oy: ptr.origY,
-                     nx: p2.x, ny: p2.y });
+        if (ptr.target.type === 'point') {
+          var p2 = pt(ptr.target.id);
+          if (p2 && (p2.x !== ptr.origX || p2.y !== ptr.origY)) {
+            pushUndo({ type:'move', pid: ptr.target.id,
+                       ox: ptr.origX, oy: ptr.origY,
+                       nx: p2.x, ny: p2.y });
+          }
         }
       }
     }
+
+    /* ── 寸法変更モード（タップのみ、dimLayer側で処理済み） ── */
+    // dimLayer の pointerdown ハンドラが処理するため、ここでは何もしない
+
+    /* ── 削除モード：矩形選択確定 ── */
+    if (state.mode === 'delete' && ptr.moved) {
+      var curSvg = screen2svg(e.clientX, e.clientY);
+      executeDelete(ptr.svgX, ptr.svgY, curSvg.x, curSvg.y);
+    }
+
+    prevLayer.innerHTML = '';
     ptr = reset_ptr();
+  }
+
+  /* ═══════════════════════════════════════════
+   *  削除モード：矩形描画＋ハイライト
+   * ═══════════════════════════════════════════ */
+  function drawDeleteRect(x1, y1, x2, y2) {
+    prevLayer.innerHTML = '';
+    var leftToRight = x2 > x1;
+    var rx = Math.min(x1, x2), ry = Math.min(y1, y2);
+    var rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
+    var sw = px2svg(1.2);
+    // 左→右=青実線（完全包含）、右→左=緑破線（交差）
+    var col = leftToRight ? '#1565c0' : '#2e7d32';
+    var dashAttr = leftToRight ? 'none' : (sw * 5) + ' ' + (sw * 3);
+    var fillOp = leftToRight ? 0.08 : 0.12;
+    prevLayer.appendChild(makeSVG('rect', {
+      x: rx, y: ry, width: rw, height: rh,
+      fill: col, 'fill-opacity': fillOp,
+      stroke: col, 'stroke-width': sw,
+      'stroke-dasharray': dashAttr
+    }));
+    // 選択対象の点をハイライト
+    var hits = getDeleteTargets(x1, y1, x2, y2);
+    var hr = px2svg(6);
+    for (var i = 0; i < hits.pts.length; i++) {
+      var p = hits.pts[i];
+      prevLayer.appendChild(makeSVG('circle', {
+        cx: p.x, cy: p.y, r: hr,
+        fill: '#f44336', 'fill-opacity': 0.5, stroke: 'none'
+      }));
+    }
+  }
+
+  /* ── 選択対象の判定 ── */
+  function getDeleteTargets(x1, y1, x2, y2) {
+    var leftToRight = x2 > x1;
+    var rx = Math.min(x1, x2), ry = Math.min(y1, y2);
+    var rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
+    var rx2 = rx + rw, ry2 = ry + rh;
+
+    var hitPts = [];
+    var hitPtIds = {};
+
+    if (leftToRight) {
+      // 完全包含: 矩形内に完全に入っている点のみ
+      for (var i = 0; i < state.points.length; i++) {
+        var p = state.points[i];
+        if (p.x >= rx && p.x <= rx2 && p.y >= ry && p.y <= ry2) {
+          hitPts.push(p); hitPtIds[p.id] = true;
+        }
+      }
+    } else {
+      // 交差: 矩形に触れる線分の端点も含む
+      for (var i = 0; i < state.points.length; i++) {
+        var p = state.points[i];
+        if (p.x >= rx && p.x <= rx2 && p.y >= ry && p.y <= ry2) {
+          hitPts.push(p); hitPtIds[p.id] = true;
+        }
+      }
+      // さらに、線分が矩形と交差する場合その両端点も対象
+      for (var i = 0; i < state.segments.length; i++) {
+        var s = state.segments[i];
+        var a = pt(s.a), b = pt(s.b);
+        if (!a || !b) continue;
+        if (lineIntersectsRect(a.x, a.y, b.x, b.y, rx, ry, rx2, ry2)) {
+          if (!hitPtIds[a.id]) { hitPts.push(a); hitPtIds[a.id] = true; }
+          if (!hitPtIds[b.id]) { hitPts.push(b); hitPtIds[b.id] = true; }
+        }
+      }
+    }
+    // 削除対象のセグメント: 両端いずれかが対象点に含まれるもの
+    var hitSegs = [];
+    for (var i = 0; i < state.segments.length; i++) {
+      var s = state.segments[i];
+      if (hitPtIds[s.a] || hitPtIds[s.b]) hitSegs.push(s);
+    }
+    return { pts: hitPts, segs: hitSegs };
+  }
+
+  /* ── 線分と矩形の交差判定 ── */
+  function lineIntersectsRect(ax, ay, bx, by, rx, ry, rx2, ry2) {
+    // 端点が矩形内なら交差
+    if ((ax >= rx && ax <= rx2 && ay >= ry && ay <= ry2) ||
+        (bx >= rx && bx <= rx2 && by >= ry && by <= ry2)) return true;
+    // 矩形の4辺と線分の交差判定
+    return segIntersect(ax,ay,bx,by, rx,ry,rx2,ry) ||
+           segIntersect(ax,ay,bx,by, rx2,ry,rx2,ry2) ||
+           segIntersect(ax,ay,bx,by, rx,ry2,rx2,ry2) ||
+           segIntersect(ax,ay,bx,by, rx,ry,rx,ry2);
+  }
+  function segIntersect(ax,ay,bx,by, cx,cy,dx,dy) {
+    var d1 = cross(cx,cy,dx,dy,ax,ay);
+    var d2 = cross(cx,cy,dx,dy,bx,by);
+    var d3 = cross(ax,ay,bx,by,cx,cy);
+    var d4 = cross(ax,ay,bx,by,dx,dy);
+    if (((d1>0&&d2<0)||(d1<0&&d2>0)) && ((d3>0&&d4<0)||(d3<0&&d4>0))) return true;
+    return false;
+  }
+  function cross(ax,ay,bx,by,cx,cy) { return (bx-ax)*(cy-ay)-(by-ay)*(cx-ax); }
+
+  /* ── 削除実行 ── */
+  function executeDelete(x1, y1, x2, y2) {
+    var hits = getDeleteTargets(x1, y1, x2, y2);
+    if (!hits.pts.length && !hits.segs.length) return;
+    var msg = hits.pts.length + '個の点と' + hits.segs.length + '本の線を削除しますか？';
+    if (!confirm(msg)) return;
+    // Undo 用にクローン保存
+    var act = {
+      type: 'deleteBatch',
+      pts: hits.pts.map(function(p){ return clone(p); }),
+      segs: hits.segs.map(function(s){ return clone(s); })
+    };
+    // 削除実行
+    var pidSet = {}; for (var i = 0; i < hits.pts.length; i++) pidSet[hits.pts[i].id] = true;
+    var sidSet = {}; for (var i = 0; i < hits.segs.length; i++) sidSet[hits.segs[i].id] = true;
+    state.points = state.points.filter(function(p){ return !pidSet[p.id]; });
+    state.segments = state.segments.filter(function(s){ return !sidSet[s.id]; });
+    if (state.activeId && pidSet[state.activeId]) state.activeId = null;
+    pushUndo(act);
+    render();
   }
 
   /* ═══════════════════════════════════════════
@@ -565,14 +718,37 @@
     render();
     updUndoBtn();
 
-    // 寸法タップ編集（イベントデリゲーション）
+    // 寸法タップ編集（寸法変更モード時のみ有効）
     dimLayer.addEventListener('pointerdown', function(e) {
+      if (state.mode !== 'dim') return;
       var g = e.target.closest('[data-seg-id]');
       if (!g) return;
-      e.stopPropagation();          // キャンバスへの伝播を止める
+      e.stopPropagation();
       var segId = parseInt(g.getAttribute('data-seg-id'), 10);
       if (segId) editDimension(segId);
     });
+
+    // モード切替
+    var modeBtns = {
+      draw:   document.getElementById('btnModeDraw'),
+      dim:    document.getElementById('btnModeDim'),
+      'delete': document.getElementById('btnModeDelete')
+    };
+    function setMode(m) {
+      state.mode = m;
+      for (var k in modeBtns) {
+        modeBtns[k].classList.toggle('mode-active', k === m);
+      }
+      // カーソル連動
+      svg.className.baseVal = m !== 'draw' ? 'mode-' + m : '';
+      // 描画モード以外ではアクティブ点を解除
+      if (m !== 'draw' && state.activeId) { state.activeId = null; render(); }
+    }
+    for (var k in modeBtns) {
+      (function(mode) {
+        modeBtns[mode].addEventListener('click', function(){ setMode(mode); });
+      })(k);
+    }
 
     // ポインタイベント
     svg.addEventListener('pointerdown',   onDown);
