@@ -230,11 +230,22 @@
     }
   }
 
-  /* --- 寸法 --- */
+  /* --- 重心（外側配置判定用） --- */
+  function centroid() {
+    var cx = 0, cy = 0, n = state.points.length;
+    if (!n) return { x: 0, y: 0 };
+    for (var i = 0; i < n; i++) { cx += state.points[i].x; cy += state.points[i].y; }
+    return { x: cx / n, y: cy / n };
+  }
+
+  /* --- 寸法（外側配置＋タップ編集対応） --- */
   function renderDims() {
     dimLayer.innerHTML = '';
+    if (!state.points.length) return;
     var fs  = fontSize();
-    var off = fs * 1.8;
+    var off = fs * 2.2;
+    var cen = centroid();
+
     for (var i = 0; i < state.segments.length; i++) {
       var s = state.segments[i];
       var a = pt(s.a), b = pt(s.b);
@@ -246,10 +257,16 @@
       var label = fmtMm(len);
       var tw = label.length * fs * 0.62;
       var th = fs * 1.3;
-      var g  = makeSVG('g', {});
+      var g  = makeSVG('g', {
+        'data-seg-id': s.id,
+        cursor: 'pointer', 'pointer-events': 'all'
+      });
 
       if (horiz) {
-        var rx = mx - tw / 2, ry = my - off - th / 2;
+        // 重心が下→上に配置（dir=-1）、重心が上→下に配置（dir=+1）
+        var dir = (cen.y > my) ? -1 : 1;
+        var ry = my + dir * off - th / 2;
+        var rx = mx - tw / 2;
         g.appendChild(makeSVG('rect', {
           x: rx, y: ry, width: tw, height: th,
           fill: '#fff', rx: fs * 0.15, opacity: 0.9
@@ -260,8 +277,11 @@
           'font-family': 'sans-serif', fill: '#333'
         }, label));
       } else {
+        // 重心が左→右に配置（dir=+1）、重心が右→左に配置（dir=-1）
+        var dir = (cen.x < mx) ? 1 : -1;
+        // JIS: 垂直寸法は右から読む → rotate(-90)
         var ig = makeSVG('g', {
-          transform: 'translate(' + (mx + off) + ',' + my + ') rotate(-90)'
+          transform: 'translate(' + (mx + dir * off) + ',' + my + ') rotate(-90)'
         });
         ig.appendChild(makeSVG('rect', {
           x: -tw / 2, y: -th / 2, width: tw, height: th,
@@ -507,6 +527,36 @@
   function fmtMm(mm) { return mm.toLocaleString('ja-JP'); }
 
   /* ═══════════════════════════════════════════
+   *  寸法タッチ編集
+   * ═══════════════════════════════════════════ */
+  function editDimension(segId) {
+    var seg = state.segments.find(function(s){ return s.id === segId; });
+    if (!seg) return;
+    var a = pt(seg.a), b = pt(seg.b);
+    if (!a || !b) return;
+    var curLen = Math.round(Math.hypot(b.x - a.x, b.y - a.y));
+    var input = prompt('寸法 (mm) を入力してください', curLen);
+    if (input === null) return;
+    var newLen = parseInt(input, 10);
+    if (isNaN(newLen) || newLen <= 0) return;
+    // スナップ: GRID の倍数に丸める
+    newLen = Math.round(newLen / GRID) * GRID;
+    if (newLen <= 0) newLen = GRID;
+    if (newLen === curLen) return;
+    // 端点B を方向を維持して伸縮
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var dist = Math.hypot(dx, dy);
+    var oldBx = b.x, oldBy = b.y;
+    b.x = a.x + dx / dist * newLen;
+    b.y = a.y + dy / dist * newLen;
+    // 直交線の場合はスナップ補正
+    b.x = Math.round(b.x / GRID) * GRID;
+    b.y = Math.round(b.y / GRID) * GRID;
+    pushUndo({ type:'move', pid: seg.b, ox: oldBx, oy: oldBy, nx: b.x, ny: b.y });
+    render();
+  }
+
+  /* ═══════════════════════════════════════════
    *  初期化
    * ═══════════════════════════════════════════ */
   function init() {
@@ -514,6 +564,15 @@
     updateViewBox();
     render();
     updUndoBtn();
+
+    // 寸法タップ編集（イベントデリゲーション）
+    dimLayer.addEventListener('pointerdown', function(e) {
+      var g = e.target.closest('[data-seg-id]');
+      if (!g) return;
+      e.stopPropagation();          // キャンバスへの伝播を止める
+      var segId = parseInt(g.getAttribute('data-seg-id'), 10);
+      if (segId) editDimension(segId);
+    });
 
     // ポインタイベント
     svg.addEventListener('pointerdown',   onDown);
