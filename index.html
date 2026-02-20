@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://unpkg.com; style-src 'self'; img-src 'self' data:;">
+  <title>SimpleDraft - 図面作成</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ===== ツールバー ===== -->
+  <header id="toolbar">
+    <div class="tb-group">
+      <button id="btnNew" title="新規作成">&#x1F5D2; 新規</button>
+      <button id="btnUndo" title="元に戻す (Ctrl+Z)" disabled>&#x21A9;</button>
+      <button id="btnRedo" title="やり直し (Ctrl+Y)" disabled>&#x21AA;</button>
+    </div>
+    <div class="tb-group tb-name">
+      <input id="projectName" type="text" placeholder="案件名を入力" maxlength="60">
+    </div>
+    <div class="tb-group">
+      <button id="btnOrtho" class="toggle-on" title="直交モード ON/OFF">&#x22A5; 直交</button>
+    </div>
+    <div class="tb-group">
+      <button id="btnZoomOut" title="縮小">−</button>
+      <span id="scaleLabel">1:50</span>
+      <button id="btnZoomIn" title="拡大">＋</button>
+    </div>
+    <div class="tb-group">
+      <button id="btnFinish" title="描画確定 (Esc)">&#x2713; 確定</button>
+      <button id="btnPdf" title="PDF出力">&#x1F4C4; PDF</button>
+    </div>
+  </header>
+
+  <!-- ===== キャンバス ===== -->
+  <main id="canvas-wrap">
+    <svg id="drawing" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="gridPattern" patternUnits="userSpaceOnUse"
+                 x="0" y="0" width="100" height="100">
+          <circle id="gridDot" cx="0" cy="0" r="3" fill="#c0c0c0"/>
+        </pattern>
+      </defs>
+      <!-- 背景グリッド（大きな矩形にパターン適用） -->
+      <rect id="gridBg" x="-50000" y="-50000"
+            width="100000" height="100000" fill="url(#gridPattern)"/>
+      <!-- 描画レイヤー -->
+      <g id="segmentLayer"></g>
+      <g id="dimLayer"></g>
+      <g id="pointLayer"></g>
+      <g id="previewLayer"></g>
+    </svg>
+  </main>
+
+  <!-- ===== 外部ライブラリ（PDF生成）===== -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"
+          crossorigin="anonymous"></script>
+  <!-- フォールバック: jsdelivr が失敗した場合 unpkg から取得 -->
+  <script src="cdn-fallback.js"></script>
+
+  <!-- ===== アプリ本体 ===== -->
+  <script src="app.js"></script>
+  <script src="pdf.js"></script>
+</body>
+</html>
