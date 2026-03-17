@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://unpkg.com; style-src 'self'; img-src 'self' data:;">
+        content="default-src 'self' blob:; script-src 'self' https://cdn.jsdelivr.net https://unpkg.com; style-src 'self'; img-src 'self' data:;">
   <title>SimpleDraft - 図面作成</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -12,30 +12,29 @@
 
   <!-- ===== ツールバー ===== -->
   <header id="toolbar">
-    <div class="tb-group">
-      <button id="btnNew" title="新規作成">&#x1F5D2; 新規</button>
-      <button id="btnUndo" title="元に戻す (Ctrl+Z)" disabled>&#x21A9;</button>
-      <button id="btnRedo" title="やり直し (Ctrl+Y)" disabled>&#x21AA;</button>
-    </div>
     <div class="tb-group tb-name">
+      <div id="menuWrap" class="menu">
+        <button id="btnMenu" type="button" title="メニュー">&#x2630; メニュー</button>
+        <div class="menu-panel" role="menu">
+          <button id="btnNew" type="button" role="menuitem" title="新規作成">&#x1F5D2; 新規</button>
+          <button id="btnHistory" type="button" role="menuitem" title="PDF履歴">&#x1F4CB; 履歴</button>
+          <button id="btnPdf" type="button" role="menuitem" title="PDF出力">&#x1F4C4; PDF</button>
+        </div>
+      </div>
       <input id="projectName" type="text" placeholder="案件名を入力" maxlength="60">
     </div>
     <div class="tb-group tb-modes">
       <button id="btnModeDraw" class="mode-btn mode-active" title="描画モード">&#x270F; 描画</button>
       <button id="btnModeDim" class="mode-btn" title="寸法変更モード">&#x2194; 寸法</button>
       <button id="btnModeDelete" class="mode-btn" title="削除モード">&#x2715; 削除</button>
+      <button id="btnModeMove" class="mode-btn" title="移動モード">&#x21C6; 移動</button>
     </div>
-    <div class="tb-group">
-      <button id="btnOrtho" class="toggle-on" title="直交モード ON/OFF">&#x22A5; 直交</button>
-    </div>
-    <div class="tb-group">
-      <button id="btnZoomOut" title="縮小">−</button>
-      <span id="scaleLabel">1:50</span>
-      <button id="btnZoomIn" title="拡大">＋</button>
+    <div class="tb-group tb-draw-tools" id="drawTools">
+      <button id="btnToolLine" class="tool-btn tool-active" title="直線ツール">／ 直線</button>
+      <button id="btnToolCircle" class="tool-btn" title="円/円弧ツール">◯ 円</button>
     </div>
     <div class="tb-group">
       <button id="btnFinish" title="描画確定 (Esc)">&#x2713; 確定</button>
-      <button id="btnPdf" title="PDF出力">&#x1F4C4; PDF</button>
     </div>
   </header>
 
@@ -52,12 +51,92 @@
       <rect id="gridBg" x="-50000" y="-50000"
             width="100000" height="100000" fill="url(#gridPattern)"/>
       <!-- 描画レイヤー -->
+      <g id="circleLayer"></g>
       <g id="segmentLayer"></g>
       <g id="dimLayer"></g>
       <g id="pointLayer"></g>
       <g id="previewLayer"></g>
     </svg>
+
+    <div id="modeIndicator" class="float-panel float-tl">描画</div>
+
+    <div id="floatUndo" class="float-panel float-bl">
+      <button id="btnUndo" title="元に戻す (Ctrl+Z)" disabled>&#x21A9;</button>
+      <button id="btnRedo" title="やり直し (Ctrl+Y)" disabled>&#x21AA;</button>
+    </div>
+
+    <div id="floatZoom" class="float-panel float-br">
+      <button id="btnOrtho" class="toggle-on" title="直交モード ON/OFF">&#x22A5; 直交</button>
+      <button id="btnZoomOut" title="縮小">−</button>
+      <span id="scaleLabel">1:50</span>
+      <button id="btnZoomIn" title="拡大">＋</button>
+    </div>
   </main>
+
+  <!-- ===== 履歴モーダル ===== -->
+  <div id="historyModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2>PDF履歴</h2>
+        <div class="modal-header-actions">
+          <button id="historyClearAll" class="hbtn hbtn-clear">全削除</button>
+          <button id="historyClose" class="modal-close">&times;</button>
+        </div>
+      </div>
+      <div id="historyList" class="history-list"></div>
+    </div>
+  </div>
+
+  <!-- ===== 円作成モーダル（半径入力） ===== -->
+  <div id="radiusModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="radiusTitle">
+    <div class="modal-box modal-small">
+      <div class="modal-header">
+        <h2 id="radiusTitle">半径 (mm) を入力</h2>
+        <button id="radiusClose" class="modal-close" type="button" aria-label="閉じる">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input id="radiusInput" class="modal-input"
+               type="number" inputmode="numeric" pattern="[0-9]*"
+               placeholder="例: 500">
+        <div class="modal-actions">
+          <button id="radiusOk" class="mbtn mbtn-primary" type="button">OK</button>
+          <button id="radiusCancel" class="mbtn mbtn-secondary" type="button">キャンセル</button>
+        </div>
+        <p class="modal-help">※ 100mm単位で自動丸めします</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 円作成モーダル（種類選択） ===== -->
+  <div id="circleTypeModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="circleTypeTitle">
+    <div class="modal-box modal-small">
+      <div class="modal-header">
+        <h2 id="circleTypeTitle">円の種類を選択</h2>
+        <button id="circleTypeClose" class="modal-close" type="button" aria-label="閉じる">&times;</button>
+      </div>
+      <div class="modal-body">
+        <button class="circle-type-btn" type="button" data-kind="1">
+          <div class="ct-title">○ 全円</div>
+          <div class="ct-desc">そのまま確定</div>
+        </button>
+        <button class="circle-type-btn" type="button" data-kind="2">
+          <div class="ct-title">◑ 半円</div>
+          <div class="ct-desc">開始点をタップして確定</div>
+        </button>
+        <button class="circle-type-btn" type="button" data-kind="3">
+          <div class="ct-title">◔ 1/4円</div>
+          <div class="ct-desc">開始点をタップして確定</div>
+        </button>
+        <button class="circle-type-btn" type="button" data-kind="4">
+          <div class="ct-title">◠ 円弧（自由）</div>
+          <div class="ct-desc">開始点→終了点をタップして確定</div>
+        </button>
+        <div class="modal-actions">
+          <button id="circleTypeCancel" class="mbtn mbtn-secondary" type="button">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ===== 外部ライブラリ（PDF生成）===== -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"

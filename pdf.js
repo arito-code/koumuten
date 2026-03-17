@@ -41,8 +41,20 @@
     // ローカル参照（以後 snap.xxx で参照）
     var pts = snap.points;
     var segs = snap.segments;
+    var circles = snap.circles || [];
     var fmtMm = snap.fmtMm;
     function findPt(id) { for(var i=0;i<pts.length;i++){if(pts[i].id===id)return pts[i];} return null; }
+
+    function normAngleDeg(a) {
+      var x = a % 360;
+      if (x < 0) x += 360;
+      return x;
+    }
+    function ccwDeltaDeg(a0, a1) {
+      a0 = normAngleDeg(a0);
+      a1 = normAngleDeg(a1);
+      return (a1 >= a0) ? (a1 - a0) : (a1 + 360 - a0);
+    }
 
     /* --- バウンディングボックス --- */
     var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -50,6 +62,16 @@
       var p = pts[i];
       minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
       maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+    }
+    for (var i = 0; i < circles.length; i++) {
+      var c = circles[i];
+      var cp = findPt(c.center);
+      if (!cp || !(c.r > 0)) continue;
+      // 安全側に全円の外接矩形を bbox に含める（円弧も同様）
+      minX = Math.min(minX, cp.x - c.r);
+      minY = Math.min(minY, cp.y - c.r);
+      maxX = Math.max(maxX, cp.x + c.r);
+      maxY = Math.max(maxY, cp.y + c.r);
     }
     var MARGIN_MM = 800;        // mm（図面座標系でのマージン）
     minX -= MARGIN_MM; minY -= MARGIN_MM;
@@ -85,6 +107,42 @@
     var titleH = 4;
     var titleW = titleH * (titleImg.w / titleImg.h);
     doc.addImage(titleImg.url, 'PNG', pm, pm - 6, titleW, titleH);
+
+    /* --- 円/円弧 --- */
+    doc.setDrawColor(50);
+    doc.setLineWidth(0.3);
+    function circleText(c) { return 'R' + fmtMm(Math.round(c.r)); }
+    function drawArcPolyline(cx, cy, r, a0Deg, a1Deg) {
+      var a0 = normAngleDeg(a0Deg);
+      var a1 = normAngleDeg(a1Deg);
+      var d = ccwDeltaDeg(a0, a1);
+      if (d === 0) return;
+      var steps = Math.max(12, Math.ceil(d / 10));
+      var step = d / steps;
+      var prev = null;
+      for (var k = 0; k <= steps; k++) {
+        var ang = (a0 + step * k) * Math.PI / 180;
+        // 角度は数学標準（Y上が+）なので、図面座標（Y下が+）へ変換で -sin
+        var x = cx + r * Math.cos(ang);
+        var y = cy - r * Math.sin(ang);
+        if (prev) doc.line(tx(prev.x), ty(prev.y), tx(x), ty(y));
+        prev = { x: x, y: y };
+      }
+    }
+    for (var i = 0; i < circles.length; i++) {
+      var c = circles[i];
+      var cp = findPt(c.center);
+      if (!cp || !(c.r > 0)) continue;
+      if (c.fullCircle) {
+        doc.circle(tx(cp.x), ty(cp.y), c.r * scale);
+      } else {
+        drawArcPolyline(cp.x, cp.y, c.r, c.startAngle, c.endAngle);
+      }
+      // 半径ラベル
+      doc.setFontSize(6);
+      doc.setTextColor(60);
+      doc.text(circleText(c), tx(cp.x + c.r), ty(cp.y), { align: 'left' });
+    }
 
     /* --- 壁線（太め） --- */
     doc.setDrawColor(50);
@@ -180,6 +238,157 @@
     var fname = prefix + '_' + now.getFullYear()
       + pad(now.getMonth()+1) + pad(now.getDate()) + '_'
       + pad(now.getHours()) + pad(now.getMinutes()) + '.pdf';
-    doc.save(fname);
+    savePdfToHistory(doc, snap.projectName, fname);
+    if (window.innerWidth <= 600) {
+      window.open(doc.output('bloburl'), '_blank');
+    } else {
+      doc.save(fname);
+    }
   };
+
+  /* ═══════════════════════════════════════════
+   *  PDF 履歴 – localStorage 管理
+   * ═══════════════════════════════════════════ */
+  var HISTORY_KEY = 'simpleDraft_pdfHistory';
+  var MAX_HISTORY = 50;
+
+  function loadHistory() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; }
+    catch(e) { return []; }
+  }
+  function saveHistory(list) {
+    while (list.length > MAX_HISTORY) list.shift();
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+    } catch(e) {
+      if (list.length > 1) { list.shift(); saveHistory(list); }
+    }
+  }
+
+  function savePdfToHistory(doc, projectName, fileName) {
+    var dataUri = doc.output('datauristring');
+    var entry = {
+      id: 'pdf_' + Date.now(),
+      projectName: projectName || '',
+      fileName: fileName,
+      createdAt: new Date().toISOString(),
+      dataUri: dataUri
+    };
+    var list = loadHistory();
+    list.push(entry);
+    saveHistory(list);
+  }
+
+  /* ═══════════════════════════════════════════
+   *  履歴モーダル UI
+   * ═══════════════════════════════════════════ */
+  function openHistoryModal() {
+    var modal = document.getElementById('historyModal');
+    if (!modal) return;
+    renderHistoryList();
+    modal.classList.add('is-open');
+  }
+  function closeHistoryModal() {
+    var modal = document.getElementById('historyModal');
+    if (modal) modal.classList.remove('is-open');
+  }
+
+  function renderHistoryList() {
+    var container = document.getElementById('historyList');
+    if (!container) return;
+    var list = loadHistory();
+    if (!list.length) {
+      container.innerHTML = '<p class="history-empty">保存されたPDFはありません</p>';
+      return;
+    }
+    var html = '';
+    for (var i = list.length - 1; i >= 0; i--) {
+      var e = list[i];
+      var d = new Date(e.createdAt);
+      var dateStr = d.getFullYear() + '/'
+        + ('0'+(d.getMonth()+1)).slice(-2) + '/'
+        + ('0'+d.getDate()).slice(-2) + ' '
+        + ('0'+d.getHours()).slice(-2) + ':'
+        + ('0'+d.getMinutes()).slice(-2);
+      html += '<div class="history-card" data-id="' + e.id + '">'
+        + '<div class="history-info">'
+        + '<span class="history-name">' + escHtml(e.projectName || '(無題)') + '</span>'
+        + '<span class="history-date">' + dateStr + '</span>'
+        + '<span class="history-file">' + escHtml(e.fileName) + '</span>'
+        + '</div>'
+        + '<div class="history-actions">'
+        + '<button class="hbtn hbtn-dl" data-id="' + e.id + '">&#x2B07; DL</button>'
+        + '<button class="hbtn hbtn-del" data-id="' + e.id + '">&#x2715;</button>'
+        + '</div>'
+        + '</div>';
+    }
+    container.innerHTML = html;
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function downloadFromHistory(id) {
+    var list = loadHistory();
+    var entry = null;
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { entry = list[i]; break; } }
+    if (!entry) return;
+    var byteString = atob(entry.dataUri.split(',')[1]);
+    var ab = new ArrayBuffer(byteString.length);
+    var ia = new Uint8Array(ab);
+    for (var i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+    var blob = new Blob([ab], { type: 'application/pdf' });
+    var url = URL.createObjectURL(blob);
+    if (window.innerWidth <= 600) {
+      window.open(url, '_blank');
+    } else {
+      var a = document.createElement('a');
+      a.href = url; a.download = entry.fileName;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  function deleteFromHistory(id) {
+    if (!confirm('この履歴を削除しますか？')) return;
+    var list = loadHistory();
+    list = list.filter(function(e){ return e.id !== id; });
+    saveHistory(list);
+    renderHistoryList();
+  }
+
+  function clearAllHistory() {
+    if (!confirm('すべてのPDF履歴を削除しますか？')) return;
+    saveHistory([]);
+    renderHistoryList();
+  }
+
+  /* --- イベントバインド --- */
+  document.addEventListener('DOMContentLoaded', function() {
+    var btnHistory = document.getElementById('btnHistory');
+    if (btnHistory) btnHistory.addEventListener('click', openHistoryModal);
+
+    var btnClose = document.getElementById('historyClose');
+    if (btnClose) btnClose.addEventListener('click', closeHistoryModal);
+
+    var btnClearAll = document.getElementById('historyClearAll');
+    if (btnClearAll) btnClearAll.addEventListener('click', clearAllHistory);
+
+    var modal = document.getElementById('historyModal');
+    if (modal) {
+      modal.addEventListener('click', function(e) {
+        if (e.target === modal) closeHistoryModal();
+      });
+      var listEl = document.getElementById('historyList');
+      if (listEl) listEl.addEventListener('click', function(e) {
+        var btn = e.target.closest('.hbtn');
+        if (!btn) return;
+        var id = btn.getAttribute('data-id');
+        if (btn.classList.contains('hbtn-dl'))  downloadFromHistory(id);
+        if (btn.classList.contains('hbtn-del')) deleteFromHistory(id);
+      });
+    }
+  });
 })();
